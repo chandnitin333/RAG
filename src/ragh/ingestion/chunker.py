@@ -1,10 +1,6 @@
 from typing import List, Dict
-import tiktoken  # optional, or use simple tokenization
+import re
 from dataclasses import dataclass
-from ragh.config import settings
-import re
-from typing import List, Dict
-import re
 
 
 @dataclass

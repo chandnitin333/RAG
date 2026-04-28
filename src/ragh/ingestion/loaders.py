@@ -1,94 +1,154 @@
+"""Document loaders. Returns extracted plain text for any supported file type.
+
+Heavy parser libs (pdfplumber, PyMuPDF, pytesseract, python-docx, Pillow) are
+lazy-imported inside the loader functions so `is_supported()` and module
+imports stay cheap.
+
+PDF strategy: pdfplumber → PyMuPDF → OCR (per-page rasterize + tesseract).
+"""
 from pathlib import Path
-import tempfile
 import io
-from typing import Optional
-import pdfplumber
-import docx
-from PIL import Image
-import pytesseract
-import speech_recognition as sr
-import moviepy.editor as mpy
+import tempfile
 from loguru import logger
 
+from ragh.config import settings
+
+
+SUPPORTED_TEXT_EXT = {".txt", ".md", ".markdown", ".csv", ".tsv", ".log"}
+SUPPORTED_PDF_EXT = {".pdf"}
+SUPPORTED_DOCX_EXT = {".docx", ".doc"}
+SUPPORTED_IMAGE_EXT = {".png", ".jpg", ".jpeg", ".bmp", ".tiff", ".webp"}
+
+
+def is_supported(path: Path) -> bool:
+    ext = path.suffix.lower()
+    return (
+        ext in SUPPORTED_TEXT_EXT
+        or ext in SUPPORTED_PDF_EXT
+        or ext in SUPPORTED_DOCX_EXT
+        or ext in SUPPORTED_IMAGE_EXT
+    )
+
+
+# --------------------------- file-path loaders ---------------------------
+
 def load_pdf(path: Path) -> str:
-    text = []
-    with pdfplumber.open(path) as pdf:
-        for page in pdf.pages:
-            page_text = page.extract_text() or ""
-            text.append(page_text)
-    logger.debug(f"Loaded PDF {path} length={sum(len(p) for p in text)}")
-    return "\n".join(text)
+    import pdfplumber
+    text_pages = []
+    try:
+        with pdfplumber.open(str(path)) as pdf:
+            for page in pdf.pages:
+                page_text = page.extract_text() or ""
+                text_pages.append(page_text)
+    except Exception as e:
+        logger.warning("pdfplumber failed on {}: {}", path, e)
+
+    joined = "\n\n".join(text_pages).strip()
+    if joined:
+        return joined
+
+    # fallback 1: PyMuPDF
+    try:
+        import fitz
+        text_pages = []
+        with fitz.open(str(path)) as doc:
+            for page in doc:
+                text_pages.append(page.get_text("text") or "")
+        joined = "\n\n".join(text_pages).strip()
+        if joined:
+            return joined
+    except Exception as e:
+        logger.warning("PyMuPDF failed on {}: {}", path, e)
+
+    # fallback 2: OCR (scanned PDF)
+    if settings.OCR_FALLBACK:
+        try:
+            return _ocr_pdf(path)
+        except Exception as e:
+            logger.warning("OCR failed on {}: {}", path, e)
+
+    return ""
+
+
+def _ocr_pdf(path: Path) -> str:
+    import fitz
+    from PIL import Image
+    import pytesseract
+    pages_text = []
+    with fitz.open(str(path)) as doc:
+        for page in doc:
+            pix = page.get_pixmap(dpi=200)
+            img = Image.open(io.BytesIO(pix.tobytes("png")))
+            pages_text.append(pytesseract.image_to_string(img))
+    return "\n\n".join(pages_text).strip()
+
 
 def load_docx(path: Path) -> str:
-    doc = docx.Document(path)
+    import docx
+    doc = docx.Document(str(path))
     paragraphs = [p.text for p in doc.paragraphs if p.text.strip()]
-    return "\n".join(paragraphs)
-
-def load_generic(path: Path) -> str:
-    parsed = parser.from_file(str(path))
-    return parsed.get("content", "") or ""
+    return "\n\n".join(paragraphs)
 
 
+def load_text(path: Path) -> str:
+    return path.read_text(encoding="utf-8", errors="ignore")
+
+
+def load_image(path: Path) -> str:
+    from PIL import Image
+    import pytesseract
+    img = Image.open(str(path))
+    return pytesseract.image_to_string(img)
+
+
+def load_any(path: Path) -> str:
+    """Dispatch by extension. Returns "" if unsupported or empty."""
+    ext = path.suffix.lower()
+    try:
+        if ext in SUPPORTED_PDF_EXT:
+            return load_pdf(path)
+        if ext in SUPPORTED_DOCX_EXT:
+            return load_docx(path)
+        if ext in SUPPORTED_TEXT_EXT:
+            return load_text(path)
+        if ext in SUPPORTED_IMAGE_EXT:
+            return load_image(path)
+    except Exception as e:
+        logger.exception("load_any failed for {}: {}", path, e)
+    return ""
+
+
+# --------------------------- bytes loaders (for /upload) ---------------------------
 
 def extract_text_from_bytes(filename: str, data: bytes) -> str:
     ext = Path(filename).suffix.lower()
-    if ext == ".pdf":
-        return extract_pdf_bytes(data)
-    if ext in (".docx", ".doc"):
-        return extract_docx_bytes(data)
-    if ext in (".txt",):
+    if ext in SUPPORTED_PDF_EXT:
+        return _extract_pdf_bytes(data)
+    if ext in SUPPORTED_DOCX_EXT:
+        return _extract_docx_bytes(data)
+    if ext in SUPPORTED_TEXT_EXT:
         return data.decode("utf-8", errors="ignore")
-    if ext in (".png", ".jpg", ".jpeg", ".bmp", ".tiff"):
-        return extract_image_bytes(data)
-    if ext in (".mp3", ".wav", ".m4a"):
-        return extract_audio_bytes(data)
-    if ext in (".mp4", ".mov", ".mkv", ".avi"):
-        return extract_video_bytes(data)
-    # fallback: try decode
+    if ext in SUPPORTED_IMAGE_EXT:
+        return _extract_image_bytes(data)
     return data.decode("utf-8", errors="ignore")
 
-def extract_pdf_bytes(data: bytes) -> str:
-    with tempfile.NamedTemporaryFile(suffix=".pdf") as tmp:
-        tmp.write(data); tmp.flush()
-        text_pages = []
-        with pdfplumber.open(tmp.name) as pdf:
-            for p in pdf.pages:
-                page_text = p.extract_text() or ""
-                text_pages.append(page_text)
-        return "\n\n".join(text_pages)
 
-def extract_docx_bytes(data: bytes) -> str:
-    with tempfile.NamedTemporaryFile(suffix=".docx") as tmp:
-        tmp.write(data); tmp.flush()
-        doc = docx.Document(tmp.name)
-        paras = [p.text for p in doc.paragraphs if p.text.strip()]
-        return "\n\n".join(paras)
+def _extract_pdf_bytes(data: bytes) -> str:
+    with tempfile.NamedTemporaryFile(suffix=".pdf", delete=True) as tmp:
+        tmp.write(data)
+        tmp.flush()
+        return load_pdf(Path(tmp.name))
 
-def extract_image_bytes(data: bytes) -> str:
+
+def _extract_docx_bytes(data: bytes) -> str:
+    with tempfile.NamedTemporaryFile(suffix=".docx", delete=True) as tmp:
+        tmp.write(data)
+        tmp.flush()
+        return load_docx(Path(tmp.name))
+
+
+def _extract_image_bytes(data: bytes) -> str:
+    from PIL import Image
+    import pytesseract
     img = Image.open(io.BytesIO(data))
-    text = pytesseract.image_to_string(img)
-    return text
-
-def extract_audio_bytes(data: bytes) -> str:
-    with tempfile.NamedTemporaryFile(suffix=".wav") as tmp:
-        tmp.write(data); tmp.flush()
-        recognizer = sr.Recognizer()
-        with sr.AudioFile(tmp.name) as source:
-            audio = recognizer.record(source)
-            # uses Google STT (requires internet) — replace with whisper call if preferred
-            text = recognizer.recognize_google(audio)
-            return text
-
-def extract_video_bytes(data: bytes) -> str:
-    # Extract audio track and transcribe
-    with tempfile.NamedTemporaryFile(suffix=".mp4") as tmp:
-        tmp.write(data); tmp.flush()
-        clip = mpy.VideoFileClip(tmp.name)
-        audio_path = tmp.name + ".wav"
-        clip.audio.write_audiofile(audio_path, logger=None)
-        # use speech_recognition to read wav
-        recognizer = sr.Recognizer()
-        with sr.AudioFile(audio_path) as source:
-            audio = recognizer.record(source)
-            text = recognizer.recognize_google(audio)
-            return text
+    return pytesseract.image_to_string(img)

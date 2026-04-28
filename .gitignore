@@ -1,2 +1,89 @@
-venv/
+# ── Python ──────────────────────────────────────────────────────────
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg
+*.egg-info/
+.eggs/
+build/
+dist/
+*.so
 
+# venv / pyenv
+venv/
+.venv/
+env/
+ENV/
+.python-version
+
+# tooling caches
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+.coverage.*
+htmlcov/
+.tox/
+.nox/
+
+# Jupyter
+.ipynb_checkpoints/
+
+# ── Environment / secrets ───────────────────────────────────────────
+.env
+.env.*
+!.env.example
+
+# ── IDE / OS ────────────────────────────────────────────────────────
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+Thumbs.db
+
+# ── Runtime data (rebuilt by ingest; never commit) ──────────────────
+data/uploads/
+data/index/
+data/lora/
+data/checkpoints/
+data/cache/
+
+# allow the README/manifest helpers, but block heavy artifacts
+*.faiss
+*.index
+*.sqlite
+*.sqlite-journal
+*.pkl
+*.pickle
+ingest_state.json
+corpus_manifest.json
+bm25_cache.pkl
+
+# ── Logs ────────────────────────────────────────────────────────────
+logs/
+*.log
+*.log.*
+
+# ── Model weights & big binaries ────────────────────────────────────
+*.bin
+*.safetensors
+*.gguf
+*.onnx
+*.pt
+*.pth
+*.ckpt
+.cache/
+
+# ── Frontend (frontend/.gitignore covers most of this; double-safe) ─
+frontend/node_modules/
+frontend/dist/
+frontend/.vite/
+frontend/coverage/
+
+# ── Build outputs / one-off exports ─────────────────────────────────
+outputs/
+*.tar.gz
+ragh-*.pdf
+training-*.jsonl
